@@ -28,6 +28,15 @@ bool LRUReplacer::victim(frame_id_t* frame_id) {
     //  利用lru_replacer中的LRUlist_,LRUHash_实现LRU策略
     //  选择合适的frame指定为淘汰页面,赋值给*frame_id
 
+    // 查看LRUlist_是否为空，如果为空则没有页面可以被淘汰，返回false
+    // 否则，LRUlist_的末尾就是最久未被访问的页面，获取该页面的frame id，并将其从LRUlist_和LRUHash_中移除，最后返回true
+    if (LRUlist_.empty()) {
+        return false;
+    }
+    *frame_id = LRUlist_.back();  // 获取LRUlist_末尾的frame id
+    LRUlist_.pop_back();  // 从LRUlist_中移除该frame id
+    LRUhash_.erase(*frame_id);  // 从LRUHash_中移除该frame id
+
     return true;
 }
 
@@ -40,6 +49,14 @@ void LRUReplacer::pin(frame_id_t frame_id) {
     // Todo:
     // 固定指定id的frame
     // 在数据结构中移除该frame
+
+    // 首先检查LRUHash_中是否存在该frame id，如果存在则说明该页面当前是unpinned状态，需要将其从LRUlist_和LRUHash_中移除
+    auto it = LRUhash_.find(frame_id);
+    if (it != LRUhash_.end()) {
+        LRUlist_.erase(it->second);  // 从LRUlist_中移除该frame id
+        LRUhash_.erase(it);  // 从LRUHash_中移除该frame id
+    }
+    // 如果LRUHash_中不存在该frame id，说明该页面当前已经是pinned状态，无需进行任何操作
 }
 
 /**
@@ -50,6 +67,16 @@ void LRUReplacer::unpin(frame_id_t frame_id) {
     // Todo:
     //  支持并发锁
     //  选择一个frame取消固定
+
+    std::scoped_lock lock{latch_};
+    // 首先检查LRUHash_中是否存在该frame id，如果存在则说明该页面当前已经是unpinned状态，无需进行任何操作
+    auto it = LRUhash_.find(frame_id);
+    if (it != LRUhash_.end()) {
+        return;
+    }
+    // 如果LRUHash_中不存在该frame id，说明该页面当前已经是pinned状态，需要将其添加到LRUlist_和LRUHash_中
+    LRUlist_.push_front(frame_id);
+    LRUhash_[frame_id] = LRUlist_.begin();
 }
 
 /**
