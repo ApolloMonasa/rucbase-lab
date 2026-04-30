@@ -1,6 +1,8 @@
-<!-- START doctoc generated TOC please keep comment here to allow auto update -->
-<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
-<!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
+
+
+
+
+
 
 - [存储管理实验文档](#%E5%AD%98%E5%82%A8%E7%AE%A1%E7%90%86%E5%AE%9E%E9%AA%8C%E6%96%87%E6%A1%A3)
   - [任务一 缓冲池管理器](#%E4%BB%BB%E5%8A%A1%E4%B8%80-%E7%BC%93%E5%86%B2%E6%B1%A0%E7%AE%A1%E7%90%86%E5%99%A8)
@@ -12,7 +14,7 @@
     - [任务2.2 记录迭代器](#%E4%BB%BB%E5%8A%A122-%E8%AE%B0%E5%BD%95%E8%BF%AD%E4%BB%A3%E5%99%A8)
   - [实验计分](#%E5%AE%9E%E9%AA%8C%E8%AE%A1%E5%88%86)
 
-<!-- END doctoc generated TOC please keep comment here to allow auto update -->
+
 
 # 存储管理实验文档
 
@@ -51,51 +53,176 @@ class DiskManager {
 
 这些接口的内部实现调用了Linux操作系统下`/usr/include/unistd.h`提供的`read()`、`write()`、`open()`、`close()`，`unlink()`等函数。
 
+**实现思路：**
+
+- 以“页”为单位做 I/O：先定位页偏移，再读写固定字节数。
+- 以“文件句柄”为单位维护页面编号分配状态（自增策略）。
+- 对文件生命周期操作（创建/打开/关闭/删除）补齐合法性检查，避免重复创建、未打开关闭、未关闭删除等错误路径。
+
+**使用的函数与方法列表：**
+
+- 系统调用：`lseek()`、`read()`、`write()`、`open()`、`close()`、`unlink()`、`stat()`
+- `DiskManager::write_page()`、`DiskManager::read_page()`、`DiskManager::allocate_page()`
+- `DiskManager::is_file()`、`create_file()`、`open_file()`、`close_file()`、`destroy_file()`
+- 映射结构：`path2fd_`、`fd2path_`、`fd2pageno_`
+
 （1）读写页面
 
 - `void write_page(int fd, page_id_t page_no, const char *offset, int num_bytes);`
-
 - `void read_page(int fd, page_id_t page_no, char *offset, int num_bytes);`
-  
-    提示：可以调用`read()`或`write()`函数。通过(fd,page_no)可以定位指定页面及其在磁盘文件中的偏移量。注意：这里支持读写的字节长度为`num_bytes`，上层调用此函数读写页面时，其值一般为页面大小`PAGE_SIZE`。但有时也可以小于`PAGE_SIZE`，比如只读写页头数据。
+
+```cpp
+void DiskManager::write_page(int fd, page_id_t page_no, const char *offset, int num_bytes) {
+    off_t page_offset = static_cast<off_t>(page_no) * PAGE_SIZE;
+    if (lseek(fd, page_offset, SEEK_SET) == -1) {
+        throw UnixError();
+    }
+    ssize_t bytes_write = write(fd, offset, num_bytes);
+    if (bytes_write != num_bytes) {
+        throw InternalError("DiskManager::write_page Error");
+    }
+}
+
+void DiskManager::read_page(int fd, page_id_t page_no, char *offset, int num_bytes) {
+    off_t page_offset = static_cast<off_t>(page_no) * PAGE_SIZE;
+    if (lseek(fd, page_offset, SEEK_SET) == -1) {
+        throw UnixError();
+    }
+    ssize_t bytes_read = read(fd, offset, num_bytes);
+    if (bytes_read != num_bytes) {
+        throw InternalError("DiskManager::read_page Error");
+    }
+}
+```
+
+```
+提示：可以调用`read()`或`write()`函数。通过(fd,page_no)可以定位指定页面及其在磁盘文件中的偏移量。注意：这里支持读写的字节长度为`num_bytes`，上层调用此函数读写页面时，其值一般为页面大小`PAGE_SIZE`。但有时也可以小于`PAGE_SIZE`，比如只读写页头数据。
+```
 
 （2）分配页面编号
 
 - `page_id_t allocate_page(int fd);`
-  
-    目前采取简单的自增分配策略：指定文件的页面编号加1。
+
+```cpp
+page_id_t DiskManager::allocate_page(int fd) {
+    assert(fd >= 0 && fd < MAX_FD);
+    return fd2pageno_[fd]++;
+}
+```
+
+```
+目前采取简单的自增分配策略：指定文件的页面编号加1。
+```
 
 （3）文件操作
 
 - `bool is_file(const std::string &path);`
-  
-    用于判断指定路径文件是否存在。
-  
-    提示：用`struct stat`获取文件信息。
+
+```cpp
+bool DiskManager::is_file(const std::string &path) {
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && S_ISREG(st.st_mode);
+}
+```
+
+```
+用于判断指定路径文件是否存在。
+
+提示：用`struct stat`获取文件信息。
+```
 
 - `void create_file(const std::string &path);`
-  
-    用于创建指定路径文件。
-  
-    提示：调用`open()`函数，使用`O_CREAT`模式。注意不能重复创建相同文件。
+
+```cpp
+void DiskManager::create_file(const std::string &path) {
+    if (is_file(path)) {
+        throw FileExistsError(path);
+    }
+    int fd = open(path.c_str(), O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
+    if (fd == -1) {
+        throw UnixError();
+    }
+    if (close(fd) == -1) {
+        throw UnixError();
+    }
+}
+```
+
+```
+用于创建指定路径文件。
+
+提示：调用`open()`函数，使用`O_CREAT`模式。注意不能重复创建相同文件。
+```
 
 - `void open_file(const std::string &path);`
-  
-    用于打开指定路径文件。
-  
-    提示：调用`open()`函数，使用`O_RDWR`模式。注意不能重复打开相同文件，并且需要更新文件打开列表。
+
+```cpp
+int DiskManager::open_file(const std::string &path) {
+    if (!is_file(path)) {
+        throw FileNotFoundError(path);
+    }
+    if (path2fd_.count(path)) {
+        return path2fd_[path];
+    }
+    int fd = open(path.c_str(), O_RDWR);
+    if (fd == -1) {
+        throw UnixError();
+    }
+    path2fd_[path] = fd;
+    fd2path_[fd] = path;
+    return fd;
+}
+```
+
+```
+用于打开指定路径文件。
+
+提示：调用`open()`函数，使用`O_RDWR`模式。注意不能重复打开相同文件，并且需要更新文件打开列表。
+```
 
 - `void close_file(int fd);`
-  
-    用于关闭指定路径文件。
-  
-    提示：调用`close()`函数。注意不能关闭未打开的文件，并且需要更新文件打开列表。
+
+```cpp
+void DiskManager::close_file(int fd) {
+    if (!fd2path_.count(fd)) {
+        throw FileNotOpenError(fd);
+    }
+    std::string path = fd2path_[fd];
+    if (close(fd) == -1) {
+        throw UnixError();
+    }
+    fd2path_.erase(fd);
+    path2fd_.erase(path);
+}
+```
+
+```
+用于关闭指定路径文件。
+
+提示：调用`close()`函数。注意不能关闭未打开的文件，并且需要更新文件打开列表。
+```
 
 - `void destroy_file(const std::string &path);`
-  
-    用于删除指定路径文件。
-  
-    提示：调用`unlink()`函数。注意不能删除未关闭的文件。
+
+```cpp
+void DiskManager::destroy_file(const std::string &path) {
+    if (!is_file(path)) {
+        throw FileNotFoundError(path);
+    }
+    if (path2fd_.count(path)) {
+        throw FileNotClosedError(path);
+    }
+    if (unlink(path.c_str()) == -1) {
+        throw UnixError();
+    }
+}
+```
+
+```
+用于删除指定路径文件。
+
+提示：调用`unlink()`函数。注意不能删除未关闭的文件。
+```
 
 ### 任务1.2 缓冲池替换策略
 
@@ -116,27 +243,74 @@ class Replacer {
 
 注意需要保证每个函数都是原子性的操作，可以使用`std::mutex`对每个函数上锁。
 
+**实现思路：**
+
+- 使用 `list + hash` 实现 O(1) 的 LRU 维护。
+- `unpin`：把可替换帧加入队首（最近可替换）。
+- `pin`：从 LRU 结构中移除，表示不可替换。
+- `victim`：从队尾淘汰最久未使用帧。
+- 每个接口加锁，保证并发场景下结构一致性。
+
+**使用的函数与方法列表：**
+
+- `LRUReplacer::LRUReplacer()`、`victim()`、`pin()`、`unpin()`
+- `std::list<frame_id_t>`、`std::unordered_map<frame_id_t, iterator>`
+- `std::scoped_lock`
+
 - `Replacer(size_t num_pages);`
-  
     构造函数，初始化`LRUlist`的最大容量`max_size`。
 
+```cpp
+LRUReplacer::LRUReplacer(size_t num_pages) { max_size_ = num_pages; }
+```
+
 - `bool victim(frame_id_t *frame_id);`
-  
     当缓冲池要淘汰一个页面所在的帧，调用此函数。
-  
     需要删除`LRUlist`中最远被unpin的帧，并传出该帧的编号。
 
+```cpp
+bool LRUReplacer::victim(frame_id_t* frame_id) {
+    std::scoped_lock lock{latch_};
+    if (LRUlist_.empty()) {
+        return false;
+    }
+    *frame_id = LRUlist_.back();
+    LRUlist_.pop_back();
+    LRUhash_.erase(*frame_id);
+    return true;
+}
+```
+
 - `void pin(frame_id_t frame_id);`
-  
     当缓冲池要固定一个页面所在的帧，调用此函数。
-  
     需要删除`LRUlist`中指定的帧，若该帧不存在则无任何操作。
 
+```cpp
+void LRUReplacer::pin(frame_id_t frame_id) {
+    std::scoped_lock lock{latch_};
+    auto it = LRUhash_.find(frame_id);
+    if (it != LRUhash_.end()) {
+        LRUlist_.erase(it->second);
+        LRUhash_.erase(it);
+    }
+}
+```
+
 - `void unpin(frame_id_t frame_id);`
-  
     当缓冲池要取消固定一个页面所在的帧（该页面的`pin_count`变为0），调用此函数。
-  
     需要将指定帧插入到`LRUlist`中最近被unpin的位置。
+
+```cpp
+void LRUReplacer::unpin(frame_id_t frame_id) {
+    std::scoped_lock lock{latch_};
+    auto it = LRUhash_.find(frame_id);
+    if (it != LRUhash_.end()) {
+        return;
+    }
+    LRUlist_.push_front(frame_id);
+    LRUhash_[frame_id] = LRUlist_.begin();
+}
+```
 
 ### 任务1.3 缓冲池管理器
 
@@ -166,71 +340,245 @@ class BufferPoolManager {
 
 **学生可以自主添加私有辅助函数，将某些重复使用的逻辑模块化，例如寻找淘汰页、更新页表和页面等。但是不允许修改任何公有函数的声明。**
 
+**实现思路：**
+
+- 缓冲池访问优先命中页表；未命中时从 `free_list` 或 `replacer` 找牺牲帧。
+- 页面替换前若旧页为脏页，必须先写回磁盘。
+- `new_page/fetch_page` 统一走“找帧 -> 更新页元数据 -> pin”流程。
+- `unpin_page` 负责引用计数回收；`flush/flush_all` 负责强制落盘。
+- 通过全局互斥锁保护 `page_table_ / free_list_ / replacer_` 等共享结构。
+
+**使用的函数与方法列表：**
+
+- `BufferPoolManager::find_victim_page()`、`update_page()`
+- `new_page()`、`fetch_page()`、`unpin_page()`、`delete_page()`
+- `flush_page()`、`flush_all_pages()`
+- `DiskManager::read_page()`、`write_page()`、`allocate_page()`、`deallocate_page()`
+- `Replacer::victim()`、`pin()`、`unpin()`
+
 首先，可以实现辅助函数：
 
 - `bool find_victim_page(frame_id_t *frame_id);`
 
 ​	用于寻找淘汰页。
 
+```cpp
+bool BufferPoolManager::find_victim_page(frame_id_t* frame_id) {
+    if (!free_list_.empty()) {
+        *frame_id = free_list_.front();
+        free_list_.pop_front();
+        return true;
+    }
+    return replacer_->victim(frame_id);
+}
+```
+
 - `void update_page(Page *page, PageId new_page_id, frame_id_t new_frame_id);`
 
 ​	用于更新页表和页面。
 
+```cpp
+void BufferPoolManager::update_page(Page *page, PageId new_page_id, frame_id_t new_frame_id) {
+    PageId old_page_id = page->get_page_id();
+    if (old_page_id.page_no != INVALID_PAGE_ID) {
+        page_table_.erase(old_page_id);
+    }
+    if (page->is_dirty_) {
+        disk_manager_->write_page(old_page_id.fd, old_page_id.page_no, page->get_data(), PAGE_SIZE);
+        page->is_dirty_ = false;
+    }
+    page->reset_memory();
+    page->id_ = new_page_id;
+    page_table_[new_page_id] = new_frame_id;
+}
+```
+
 然后实现public函数：
 
 - `BufferPoolManager(size_t pool_size, DiskManager *disk_manager);`
-  
     构造函数，需要初始化缓冲池的最大容量`pool_size`，以及分配`replacer`和`pages`的地址空间。
-  
     初始时`free_list`中帧编号的范围为[0,pool_size)。
 
+```cpp
+BufferPoolManager(size_t pool_size, DiskManager *disk_manager)
+    : pool_size_(pool_size), disk_manager_(disk_manager) {
+    pages_ = new Page[pool_size_];
+    if (REPLACER_TYPE.compare("LRU"))
+        replacer_ = new LRUReplacer(pool_size_);
+    else if (REPLACER_TYPE.compare("CLOCK"))
+        replacer_ = new LRUReplacer(pool_size_);
+    else {
+        replacer_ = new LRUReplacer(pool_size_);
+    }
+    for (size_t i = 0; i < pool_size_; ++i) {
+        free_list_.emplace_back(static_cast<frame_id_t>(i));
+    }
+}
+```
+
 - `Page *new_page(PageId *page_id);`
-  
     用于在内存申请创建一个新的页面。
-  
     内部实现逻辑包括更新页表和页面、固定页面、寻找淘汰页等。
-  
     此外，需要用`DiskManager`分配页面编号，并传出这个新页面的编号。
-  
     提示：需要用到之前实现的接口`Replacer::pin()`、`Replacer::victim()`、`DiskManager::allocate_page()`等。
 
+```cpp
+Page* BufferPoolManager::new_page(PageId* page_id) {
+    std::scoped_lock lock{latch_};
+
+    frame_id_t frame_id = INVALID_FRAME_ID;
+    if (!find_victim_page(&frame_id)) {
+        return nullptr;
+    }
+
+    page_id->page_no = disk_manager_->allocate_page(page_id->fd);
+
+    Page *page = &pages_[frame_id];
+    update_page(page, *page_id, frame_id);
+    page->pin_count_ = 1;
+    page->is_dirty_ = false;
+    replacer_->pin(frame_id);
+    return page;
+}
+```
+
 - `Page *fetch_page(PageId page_id);`
-  
     用于获取缓冲池中的指定页面。
-  
     内部实现逻辑包括更新页表和页面、固定页面、寻找淘汰页等。
-  
     此外，如果缓冲池中不存在该页面，需要用`DiskManager`从磁盘中读取。
-  
     提示：需要用到之前实现的接口`Replacer::pin()`、`Replacer::victim()`、`DiskManager::read_page()`等。
 
+```cpp
+Page* BufferPoolManager::fetch_page(PageId page_id) {
+    std::scoped_lock lock{latch_};
+
+    auto it = page_table_.find(page_id);
+    if (it != page_table_.end()) {
+        frame_id_t frame_id = it->second;
+        Page *page = &pages_[frame_id];
+        page->pin_count_++;
+        replacer_->pin(frame_id);
+        return page;
+    }
+
+    frame_id_t frame_id = INVALID_FRAME_ID;
+    if (!find_victim_page(&frame_id)) {
+        return nullptr;
+    }
+
+    Page *page = &pages_[frame_id];
+    update_page(page, page_id, frame_id);
+    disk_manager_->read_page(page_id.fd, page_id.page_no, page->get_data(), PAGE_SIZE);
+    page->pin_count_ = 1;
+    page->is_dirty_ = false;
+    replacer_->pin(frame_id);
+    return page;
+}
+```
+
 - `bool unpin_page(PageId page_id, bool is_dirty);`
-  
     用于使用完页面后，对该页面取消固定。
-  
     内部实现逻辑较简单，先减少页面的一次引用次数，由于页面可能同时被多个线程使用，调用一次`unpin_page()`只会减少一次引用次数，只有当引用次数减少到0时，才能调用`Replacer::unpin()`来取消固定页面所在的帧。
-  
     参数`is_dirty`决定是否对页面置脏，如果上层修改了页面，就将该页面的脏标志置`true`。
 
+```cpp
+bool BufferPoolManager::unpin_page(PageId page_id, bool is_dirty) {
+    std::scoped_lock lock{latch_};
+
+    auto it = page_table_.find(page_id);
+    if (it == page_table_.end()) {
+        return false;
+    }
+
+    Page *page = &pages_[it->second];
+    if (page->pin_count_ <= 0) {
+        return false;
+    }
+
+    page->pin_count_--;
+    if (is_dirty) {
+        page->is_dirty_ = true;
+    }
+    if (page->pin_count_ == 0) {
+        replacer_->unpin(it->second);
+    }
+    return true;
+}
+```
+
 - `bool delete_page(PageId page_id);`
-  
     用于删除指定页面。
-  
     内部实现逻辑包括更新页表和页面、更新空闲帧列表等。
-  
     注意：只有引用次数为0的页面才能被删除。
 
+```cpp
+bool BufferPoolManager::delete_page(PageId page_id) {
+    std::scoped_lock lock{latch_};
+
+    auto it = page_table_.find(page_id);
+    if (it == page_table_.end()) {
+        disk_manager_->deallocate_page(page_id.page_no);
+        return true;
+    }
+
+    frame_id_t frame_id = it->second;
+    Page *page = &pages_[frame_id];
+    if (page->pin_count_ > 0) {
+        return false;
+    }
+
+    disk_manager_->write_page(page_id.fd, page_id.page_no, page->get_data(), PAGE_SIZE);
+    page_table_.erase(it);
+    replacer_->pin(frame_id);
+    page->reset_memory();
+    page->id_ = PageId{INVALID_PAGE_ID, INVALID_PAGE_ID};
+    page->is_dirty_ = false;
+    page->pin_count_ = 0;
+    free_list_.push_back(frame_id);
+    disk_manager_->deallocate_page(page_id.page_no);
+    return true;
+}
+```
+
 - `bool flush_page(PageId page_id);`
-  
     用于强制刷新（写入）缓冲池中的指定页面到磁盘。
-  
     此处的"强制"指的是无论该页的引用次数是否大于0，无论该页是否为脏页，都将其刷新到磁盘。
 
+```cpp
+bool BufferPoolManager::flush_page(PageId page_id) {
+    std::scoped_lock lock{latch_};
+
+    auto it = page_table_.find(page_id);
+    if (it == page_table_.end()) {
+        return false;
+    }
+
+    Page *page = &pages_[it->second];
+    disk_manager_->write_page(page_id.fd, page_id.page_no, page->get_data(), PAGE_SIZE);
+    page->is_dirty_ = false;
+    return true;
+}
+```
+
 - `void flush_all_pages(int fd);`
-  
     用于将指定文件中的存在于缓冲池的所有页面都刷新到磁盘。
-  
   注意，在上述所有函数的实现中，淘汰脏页之前，都要将脏页写入磁盘。
+
+```cpp
+void BufferPoolManager::flush_all_pages(int fd) {
+    std::scoped_lock lock{latch_};
+
+    for (auto &entry : page_table_) {
+        const PageId &page_id = entry.first;
+        if (page_id.fd != fd) {
+            continue;
+        }
+        Page *page = &pages_[entry.second];
+        disk_manager_->write_page(page_id.fd, page_id.page_no, page->get_data(), PAGE_SIZE);
+        page->is_dirty_ = false;
+    }
+}
+```
 
 ## 任务二 记录管理器
 
@@ -253,6 +601,22 @@ class BufferPoolManager {
 进行操作。
 
 每个`RMFileHandle`对应一个记录文件，当`RMManager`执行打开文件操作时，便会创建一个指向`RMFileHandle`的指针。 
+
+**实现思路：**
+
+- 页内布局按 `RmPageHdr + bitmap + slots` 组织，`Rid(page_no, slot_no)` 定位记录。
+- 插入时优先使用 `first_free_page_no` 链表上的空闲页，必要时新建页。
+- 删除时若页面从“满”变“未满”，将该页重新挂回空闲链头。
+- 记录存在性由 bitmap 判定；记录内容读写通过 `memcpy` 到槽位区域。
+- 页面使用结束后必须 `unpin`，写操作需标脏以确保后续落盘。
+
+**使用的函数与方法列表：**
+
+- `RmFileHandle::fetch_page_handle()`、`create_new_page_handle()`、`create_page_handle()`、`release_page_handle()`
+- `get_record()`、`insert_record()`、`delete_record()`、`update_record()`
+- `Bitmap::first_bit()`、`next_bit()`、`set()`、`reset()`、`is_set()`
+- `BufferPoolManager::fetch_page()`、`new_page()`、`unpin_page()`
+- `RecordNotFoundError`、`PageNotExistError`
 
 `RMFileHandle`类的接口如下：
 
@@ -283,11 +647,44 @@ class RmFileHandle {
 
 ​	提示：调用`BufferPoolManager::new_page()`创建新页面。
 
+```cpp
+RmPageHandle RmFileHandle::create_new_page_handle() {
+    PageId new_page_id{fd_, INVALID_PAGE_ID};
+    Page *page = buffer_pool_manager_->new_page(&new_page_id);
+    if (page == nullptr) {
+        throw InternalError("RmFileHandle::create_new_page_handle failed");
+    }
+
+    RmPageHandle page_handle(&file_hdr_, page);
+    page_handle.page_hdr->num_records = 0;
+    page_handle.page_hdr->next_free_page_no = file_hdr_.first_free_page_no;
+    Bitmap::init(page_handle.bitmap, file_hdr_.bitmap_size);
+
+    file_hdr_.first_free_page_no = new_page_id.page_no;
+    file_hdr_.num_pages++;
+    return page_handle;
+}
+```
+
 （2）`RmPageHandle fetch_page_handle(int page_no) const;`
 
 ​	用于获取指定页面对应的`RmPageHandle`。
 
 ​	提示：调用`BufferPoolManager::fetch_page()`获取指定页面。
+
+```cpp
+RmPageHandle RmFileHandle::fetch_page_handle(int page_no) const {
+    if (page_no < RM_FIRST_RECORD_PAGE || page_no >= file_hdr_.num_pages) {
+        throw PageNotExistError(std::to_string(fd_), page_no);
+    }
+    PageId page_id{fd_, page_no};
+    Page *page = buffer_pool_manager_->fetch_page(page_id);
+    if (page == nullptr) {
+        throw InternalError("RmFileHandle::fetch_page_handle failed");
+    }
+    return RmPageHandle(&file_hdr_, page);
+}
+```
 
 （3）`RmPageHandle create_page_handle();`
 
@@ -295,11 +692,33 @@ class RmFileHandle {
 
 ​	内部实现逻辑是先判断第一个空闲页是否存在，如果存在就直接用`fetch_page_handle()`获取它；否则直接用`create_new_page_handle()`创建一个新的`RmPageHandle`。
 
+```cpp
+RmPageHandle RmFileHandle::create_page_handle() {
+    while (file_hdr_.first_free_page_no != RM_NO_PAGE) {
+        RmPageHandle page_handle = fetch_page_handle(file_hdr_.first_free_page_no);
+        if (page_handle.page_hdr->num_records < file_hdr_.num_records_per_page) {
+            return page_handle;
+        }
+        file_hdr_.first_free_page_no = page_handle.page_hdr->next_free_page_no;
+        buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+    }
+    return create_new_page_handle();
+}
+```
+
 （4）`void release_page_handle(RmPageHandle &page_handle);`
 
 ​	当page handle中的page从已满变成未满的时候调用此函数。
 
 ​	提示：更新`page_hdr`的下一个空闲页和`file_hdr`的第一个空闲页。
+
+```cpp
+void RmFileHandle::release_page_handle(RmPageHandle &page_handle) {
+    int page_no = page_handle.page->get_page_id().page_no;
+    page_handle.page_hdr->next_free_page_no = file_hdr_.first_free_page_no;
+    file_hdr_.first_free_page_no = page_no;
+}
+```
 
 然后，可以实现其他的public函数：
 
@@ -313,6 +732,25 @@ class RmFileHandle {
 
 ​	内部实现逻辑是把位于指定slot的record拷贝一份，然后返回给上层。		
 
+```cpp
+std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* context) const {
+    (void)context;
+    if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
+    RmPageHandle page_handle = fetch_page_handle(rid.page_no);
+    if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
+        buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
+
+    auto record = std::make_unique<RmRecord>(file_hdr_.record_size);
+    memcpy(record->data, page_handle.get_slot(rid.slot_no), file_hdr_.record_size);
+    buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+    return record;
+}
+```
+
 （7）`Rid insert_record(char *buf, Context *context);`
 
 ​	用于插入一条指定记录。
@@ -320,6 +758,28 @@ class RmFileHandle {
 ​	对于堆文件组织形式，只需要找到一个有足够空间存放该记录的页面。当所有已分配页面中都没有空间时，就申请一个新页面来存放该记录。
 
 ​	注意更新bitmap，它跟踪了每个slot是否存放了record；此外，如果当前page handle中的page插入后已满，还需要更新`file_hdr`的第一个空闲页。
+
+```cpp
+Rid RmFileHandle::insert_record(char* buf, Context* context) {
+    (void)context;
+    RmPageHandle page_handle = create_page_handle();
+    int slot_no = Bitmap::first_bit(false, page_handle.bitmap, file_hdr_.num_records_per_page);
+    assert(slot_no < file_hdr_.num_records_per_page);
+
+    memcpy(page_handle.get_slot(slot_no), buf, file_hdr_.record_size);
+    Bitmap::set(page_handle.bitmap, slot_no);
+    page_handle.page_hdr->num_records++;
+
+    if (page_handle.page_hdr->num_records == file_hdr_.num_records_per_page) {
+        file_hdr_.first_free_page_no = page_handle.page_hdr->next_free_page_no;
+        page_handle.page_hdr->next_free_page_no = RM_NO_PAGE;
+    }
+
+    Rid rid{page_handle.page->get_page_id().page_no, slot_no};
+    buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), true);
+    return rid;
+}
+```
 
 （8）`void delete_record(const Rid &rid, Context *context);`
 
@@ -329,15 +789,68 @@ class RmFileHandle {
 
 ​	注意如果删除操作导致该页面恰好从已满变为未满，那么需要调用`release_page_handle()`。
 
+```cpp
+void RmFileHandle::delete_record(const Rid& rid, Context* context) {
+    (void)context;
+    if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
+    RmPageHandle page_handle = fetch_page_handle(rid.page_no);
+    if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
+        buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
+
+    bool was_full = page_handle.page_hdr->num_records == file_hdr_.num_records_per_page;
+    Bitmap::reset(page_handle.bitmap, rid.slot_no);
+    page_handle.page_hdr->num_records--;
+
+    if (was_full) {
+        release_page_handle(page_handle);
+    }
+    buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), true);
+}
+```
+
 （9）`void update_record(const Rid &rid, char *buf, Context *context);`
 
 ​	用于更新一条指定记录。
 
 ​	先获取page handle，然后直接更新page即可。
 
+```cpp
+void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
+    (void)context;
+    if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
+    RmPageHandle page_handle = fetch_page_handle(rid.page_no);
+    if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
+        buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
+    memcpy(page_handle.get_slot(rid.slot_no), buf, file_hdr_.record_size);
+    buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), true);
+}
+```
+
 ### 任务2.2 记录迭代器
 
 本任务要求补全`RmScan`类，其用于遍历文件中存放的记录。
+
+**实现思路：**
+
+- 扫描器维护当前游标 `rid_`，初始化时定位到第一条有效记录。
+- `next()` 先在当前页找下一个置位槽；若当前页无记录则跨页继续查找。
+- 当所有页都扫描完成，置 `rid_.page_no = RM_NO_PAGE` 作为结束标记。
+- `is_end()` 只判断该结束标记，`rid()` 返回当前位置。
+
+**使用的函数与方法列表：**
+
+- `RmScan::RmScan()`、`next()`、`is_end()`、`rid()`
+- `Bitmap::next_bit()`
+- `RmFileHandle::fetch_page_handle()`
+- `BufferPoolManager::unpin_page()`
 
 `RmScan`类继承于`RecScan`类，它们的接口如下：
 
@@ -365,11 +878,45 @@ public:
 
 ​    `RmScan`内部存放了`rid`，用于指向一个记录。
 
+```cpp
+RmScan::RmScan(const RmFileHandle *file_handle) : file_handle_(file_handle) {
+    rid_ = Rid{RM_FIRST_RECORD_PAGE, -1};
+    next();
+}
+```
+
 （2）`void next() override;`
 
 ​    用于找到文件中下一个存放了记录的位置。
 
 ​    对于当前页面，可以用bitmap来找bit为1的slot_no。如果当前页面的所有slot都没有存放record，就找下一个页面。
+
+```cpp
+void RmScan::next() {
+    if (rid_.page_no == RM_NO_PAGE) {
+        return;
+    }
+
+    int page_no = rid_.page_no;
+    int slot_no = rid_.slot_no;
+
+    while (page_no < file_handle_->file_hdr_.num_pages) {
+        RmPageHandle page_handle = file_handle_->fetch_page_handle(page_no);
+        int next_slot = Bitmap::next_bit(true, page_handle.bitmap, file_handle_->file_hdr_.num_records_per_page, slot_no);
+        file_handle_->buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
+
+        if (next_slot < file_handle_->file_hdr_.num_records_per_page) {
+            rid_ = Rid{page_no, next_slot};
+            return;
+        }
+
+        page_no++;
+        slot_no = -1;
+    }
+
+    rid_ = Rid{RM_NO_PAGE, -1};
+}
+```
 
 （3）`bool is_end() const override;`
 
@@ -377,11 +924,21 @@ public:
 
 ​    可以自主定义末尾的标识符，如`RM_NO_PAGE`。
 
+```cpp
+bool RmScan::is_end() const {
+    return rid_.page_no == RM_NO_PAGE;
+}
+```
+
 （4）`Rid rid() const override;`
 
 ​    获取`RmScan`内部存放的`rid`。
 
-
+```cpp
+Rid RmScan::rid() const {
+    return rid_;
+}
+```
 
 ## 实验计分
 
@@ -389,12 +946,14 @@ public:
 
 测试文件及测试点如下：
 
-| 任务点                 | 测试文件                                 | 分值 |
-| ---------------------- | ---------------------------------------- | ---- |
-| 任务1.1 磁盘存储管理器 | src/test/storage/disk_manager_test.cpp        | 10   |
-| 任务1.2 缓冲池替换策略 | src/test/storage/lru_replacer_test.cpp       | 20   |
-| 任务1.3 缓冲池管理器   | src/test/storage/buffer_pool_manager_test.cpp | 40   |
-| 任务2 记录管理器       | src/test/storage/record_manager_test.cpp                  | 30   |
+
+| 任务点           | 测试文件                                          | 分值  |
+| ------------- | --------------------------------------------- | --- |
+| 任务1.1 磁盘存储管理器 | src/test/storage/disk_manager_test.cpp        | 10  |
+| 任务1.2 缓冲池替换策略 | src/test/storage/lru_replacer_test.cpp        | 20  |
+| 任务1.3 缓冲池管理器  | src/test/storage/buffer_pool_manager_test.cpp | 40  |
+| 任务2 记录管理器     | src/test/storage/record_manager_test.cpp      | 30  |
+
 
 编译生成可执行文件进行测试：
 
@@ -413,3 +972,4 @@ make buffer_pool_manager_test
 make record_manager_test
 ./bin/record_manager_test
 ```
+

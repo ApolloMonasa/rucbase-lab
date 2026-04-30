@@ -17,7 +17,11 @@ See the Mulan PSL v2 for more details. */
 
 #include "defs.h"
 
-DiskManager::DiskManager() { memset(fd2pageno_, 0, MAX_FD * (sizeof(std::atomic<page_id_t>) / sizeof(char))); }
+DiskManager::DiskManager() {
+    for (int i = 0; i < MAX_FD; i++) {
+        fd2pageno_[i].store(0);
+    }
+}
 
 /**
  * @description: 将数据写入文件的指定磁盘页面中

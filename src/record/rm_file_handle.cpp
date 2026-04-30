@@ -18,6 +18,9 @@ See the Mulan PSL v2 for more details. */
  */
 std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* context) const {
     (void)context;
+    if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
@@ -62,6 +65,9 @@ Rid RmFileHandle::insert_record(char* buf, Context* context) {
  * @param {char*} buf 要插入记录的数据
  */
 void RmFileHandle::insert_record(const Rid& rid, char* buf) {
+    if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     bool was_full = page_handle.page_hdr->num_records == file_hdr_.num_records_per_page;
 
@@ -86,6 +92,9 @@ void RmFileHandle::insert_record(const Rid& rid, char* buf) {
  */
 void RmFileHandle::delete_record(const Rid& rid, Context* context) {
     (void)context;
+    if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
@@ -111,6 +120,9 @@ void RmFileHandle::delete_record(const Rid& rid, Context* context) {
  */
 void RmFileHandle::update_record(const Rid& rid, char* buf, Context* context) {
     (void)context;
+    if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
+        throw RecordNotFoundError(rid.page_no, rid.slot_no);
+    }
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);
