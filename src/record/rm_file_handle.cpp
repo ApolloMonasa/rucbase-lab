@@ -17,10 +17,12 @@ See the Mulan PSL v2 for more details. */
  * @return {unique_ptr<RmRecord>} rid对应的记录对象指针
  */
 std::unique_ptr<RmRecord> RmFileHandle::get_record(const Rid& rid, Context* context) const {
+    // 这里的context参数暂时未使用，可以根据需要在后续实现中使用它来传递事务信息等
     (void)context;
     if (rid.slot_no < 0 || rid.slot_no >= file_hdr_.num_records_per_page) {
         throw RecordNotFoundError(rid.page_no, rid.slot_no);
     }
+    
     RmPageHandle page_handle = fetch_page_handle(rid.page_no);
     if (!Bitmap::is_set(page_handle.bitmap, rid.slot_no)) {
         buffer_pool_manager_->unpin_page(page_handle.page->get_page_id(), false);

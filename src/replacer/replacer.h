@@ -10,7 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
-#include "common/config.h"
+#include "../common/config.h"
 
 /**
  * Replacer is an abstract class that tracks page usage.

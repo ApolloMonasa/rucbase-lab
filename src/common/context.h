@@ -10,7 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
-#include "transaction/transaction.h"
+#include "../transaction/transaction.h"
 #include "transaction/concurrency/lock_manager.h"
 #include "recovery/log_manager.h"
 

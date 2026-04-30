@@ -20,8 +20,8 @@ See the Mulan PSL v2 for more details. */
 #include <string>
 #include <unordered_map>
 
-#include "common/config.h"
-#include "errors.h"  
+#include "../common/config.h"
+#include "../errors.h"  
 
 /**
  * @description: DiskManager的作用主要是根据上层的需要对磁盘文件进行操作

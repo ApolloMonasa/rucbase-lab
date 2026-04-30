@@ -15,7 +15,7 @@ See the Mulan PSL v2 for more details. */
 #include <vector>
 
 #include "../common/config.h"
-#include "../replacer/replacer.h"
+#include "replacer.h"
 #include "unordered_map"
 
 /*

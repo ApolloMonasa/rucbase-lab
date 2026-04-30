@@ -10,7 +10,7 @@ See the Mulan PSL v2 for more details. */
 
 #pragma once
 
-#include "common/config.h"
+#include "../common/config.h"
 
 /**
  * @description: 存储层每个Page的id的声明

@@ -17,11 +17,11 @@ See the Mulan PSL v2 for more details. */
 #include <unordered_map>
 #include <vector>
 
-#include "disk_manager.h"
-#include "errors.h"
-#include "page.h"
-#include "replacer/lru_replacer.h"
-#include "replacer/replacer.h"
+#include "../storage/disk_manager.h"
+#include "../errors.h"
+#include "../storage/page.h"
+#include "../replacer/lru_replacer.h"
+#include "../replacer/replacer.h"
 
 class BufferPoolManager {
    private:
