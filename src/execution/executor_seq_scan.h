@@ -12,9 +12,11 @@ See the Mulan PSL v2 for more details. */
 
 #include "execution_defs.h"
 #include "execution_manager.h"
+#include "execution_utils.h"
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
+#include "record/rm_scan.h"
 
 class SeqScanExecutor : public AbstractExecutor {
    private:
@@ -50,7 +52,8 @@ class SeqScanExecutor : public AbstractExecutor {
      *
      */
     void beginTuple() override {
-        
+        scan_ = std::make_unique<RmScan>(fh_);
+        nextTuple();
     }
 
     /**
@@ -58,7 +61,14 @@ class SeqScanExecutor : public AbstractExecutor {
      *
      */
     void nextTuple() override {
-        
+        while (!scan_->is_end()) {
+            rid_ = scan_->rid();
+            auto rec = fh_->get_record(rid_, context_);
+            if (exec_utils::satisfy_conds(conds_, cols_, rec.get())) {
+                return;
+            }
+            scan_->next();
+        }
     }
 
     /**
@@ -67,8 +77,14 @@ class SeqScanExecutor : public AbstractExecutor {
      * @return std::unique_ptr<RmRecord>
      */
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        auto rec = fh_->get_record(rid_, context_);
+        nextTuple();
+        return rec;
     }
 
     Rid &rid() override { return rid_; }
+    
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+    
+    size_t tupleLen() const override { return len_; }
 };

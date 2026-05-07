@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 #include "execution_defs.h"
 #include "execution_manager.h"
+#include "execution_utils.h"
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
@@ -39,13 +40,25 @@ class ProjectionExecutor : public AbstractExecutor {
         len_ = curr_offset;
     }
 
-    void beginTuple() override {}
-
-    void nextTuple() override {}
-
-    std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+    void beginTuple() override {
+        prev_->beginTuple();
     }
 
-    Rid &rid() override { return _abstract_rid; }
+    void nextTuple() override {
+        prev_->nextTuple();
+    }
+
+    std::unique_ptr<RmRecord> Next() override {
+        auto rec = prev_->Next();
+        if (!rec) {
+            return nullptr;
+        }
+        return exec_utils::project_record(rec.get(), prev_->cols(), cols_, sel_idxs_, len_);
+    }
+
+    Rid &rid() override { return prev_->rid(); }
+    
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+    
+    size_t tupleLen() const override { return len_; }
 };

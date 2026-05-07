@@ -11,6 +11,7 @@ See the Mulan PSL v2 for more details. */
 #pragma once
 #include "execution_defs.h"
 #include "execution_manager.h"
+#include "execution_utils.h"
 #include "executor_abstract.h"
 #include "index/ix.h"
 #include "system/sm.h"
@@ -23,7 +24,9 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     std::vector<ColMeta> cols_;                 // join后获得的记录的字段
 
     std::vector<Condition> fed_conds_;          // join条件
-    bool isend;
+    bool is_end_;
+    std::unique_ptr<RmRecord> left_rec_;
+    std::unique_ptr<RmRecord> right_rec_;
 
    public:
     NestedLoopJoinExecutor(std::unique_ptr<AbstractExecutor> left, std::unique_ptr<AbstractExecutor> right, 
@@ -38,22 +41,66 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         }
 
         cols_.insert(cols_.end(), right_cols.begin(), right_cols.end());
-        isend = false;
+        is_end_ = false;
         fed_conds_ = std::move(conds);
-
     }
 
     void beginTuple() override {
-
+        left_->beginTuple();
+        right_->beginTuple();
+        seek_next_match();
     }
 
     void nextTuple() override {
+        right_->nextTuple();
+        if (!right_->is_end()) {
+            right_rec_ = right_->Next();
+            return;
+        }
         
+        left_->nextTuple();
+        if (left_->is_end()) {
+            is_end_ = true;
+            return;
+        }
+        left_rec_ = left_->Next();
+        right_->beginTuple();
+        seek_next_match();
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        return nullptr;
+        if (is_end_) {
+            return nullptr;
+        }
+        auto result = exec_utils::join_record(left_rec_.get(), right_rec_.get(),
+                                              left_->cols(), right_->cols(), len_, left_->tupleLen());
+        nextTuple();
+        return result;
     }
 
     Rid &rid() override { return _abstract_rid; }
+    
+    const std::vector<ColMeta> &cols() const override { return cols_; }
+    
+    size_t tupleLen() const override { return len_; }
+    
+    bool is_end() const override { return is_end_; }
+
+   private:
+    void seek_next_match() {
+        while (!left_->is_end()) {
+            left_rec_ = left_->Next();
+            while (!right_->is_end()) {
+                right_rec_ = right_->Next();
+                if (exec_utils::satisfy_conds(fed_conds_, cols_, 
+                                              exec_utils::join_record(left_rec_.get(), right_rec_.get(),
+                                                                     left_->cols(), right_->cols(),
+                                                                     len_, left_->tupleLen()).get())) {
+                    return;
+                }
+            }
+            right_->beginTuple();
+        }
+        is_end_ = true;
+    }
 };

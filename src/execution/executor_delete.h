@@ -23,6 +23,7 @@ class DeleteExecutor : public AbstractExecutor {
     std::vector<Rid> rids_;         // 需要删除的记录的位置
     std::string tab_name_;          // 表名称
     SmManager *sm_manager_;
+    size_t delete_idx_;
 
    public:
     DeleteExecutor(SmManager *sm_manager, const std::string &tab_name, std::vector<Condition> conds,
@@ -34,9 +35,16 @@ class DeleteExecutor : public AbstractExecutor {
         conds_ = conds;
         rids_ = rids;
         context_ = context;
+        delete_idx_ = 0;
     }
 
     std::unique_ptr<RmRecord> Next() override {
+        if (delete_idx_ >= rids_.size()) {
+            return nullptr;
+        }
+        
+        Rid rid = rids_[delete_idx_++];
+        fh_->delete_record(rid, context_);
         return nullptr;
     }
 

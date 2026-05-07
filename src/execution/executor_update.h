@@ -24,6 +24,7 @@ class UpdateExecutor : public AbstractExecutor {
     std::string tab_name_;
     std::vector<SetClause> set_clauses_;
     SmManager *sm_manager_;
+    size_t update_idx_;
 
    public:
     UpdateExecutor(SmManager *sm_manager, const std::string &tab_name, std::vector<SetClause> set_clauses,
@@ -36,10 +37,30 @@ class UpdateExecutor : public AbstractExecutor {
         conds_ = conds;
         rids_ = rids;
         context_ = context;
+        update_idx_ = 0;
     }
+    
     std::unique_ptr<RmRecord> Next() override {
+        if (update_idx_ >= rids_.size()) {
+            return nullptr;
+        }
         
-        return nullptr;
+        Rid rid = rids_[update_idx_++];
+        auto rec = fh_->get_record(rid, context_);
+        
+        for (const auto &set_clause : set_clauses_) {
+            const auto &col = tab_.get_col(set_clause.lhs.col_name);
+            char *data = rec->data + col->offset;
+            
+            if (set_clause.rhs.type == TYPE_INT || set_clause.rhs.type == TYPE_FLOAT) {
+                memcpy(data, set_clause.rhs.raw->data, col->len);
+            } else {
+                memcpy(data, set_clause.rhs.raw->data, col->len);
+            }
+        }
+        
+        fh_->update_record(rid, rec->data, context_);
+        return rec;
     }
 
     Rid &rid() override { return _abstract_rid; }
