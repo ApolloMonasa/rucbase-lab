@@ -48,23 +48,16 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
     void beginTuple() override {
         left_->beginTuple();
         right_->beginTuple();
+        is_end_ = false;
         seek_next_match();
     }
 
     void nextTuple() override {
+        if (is_end_) {
+            return;
+        }
+
         right_->nextTuple();
-        if (!right_->is_end()) {
-            right_rec_ = right_->Next();
-            return;
-        }
-        
-        left_->nextTuple();
-        if (left_->is_end()) {
-            is_end_ = true;
-            return;
-        }
-        left_rec_ = left_->Next();
-        right_->beginTuple();
         seek_next_match();
     }
 
@@ -74,7 +67,6 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
         }
         auto result = exec_utils::join_record(left_rec_.get(), right_rec_.get(),
                                               left_->cols(), right_->cols(), len_, left_->tupleLen());
-        nextTuple();
         return result;
     }
 
@@ -89,6 +81,15 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
    private:
     void seek_next_match() {
         while (!left_->is_end()) {
+            if (right_->is_end()) {
+                left_->nextTuple();
+                if (left_->is_end()) {
+                    break;
+                }
+                right_->beginTuple();
+                continue;
+            }
+
             left_rec_ = left_->Next();
             while (!right_->is_end()) {
                 right_rec_ = right_->Next();
@@ -98,6 +99,11 @@ class NestedLoopJoinExecutor : public AbstractExecutor {
                                                                      len_, left_->tupleLen()).get())) {
                     return;
                 }
+                right_->nextTuple();
+            }
+            left_->nextTuple();
+            if (left_->is_end()) {
+                break;
             }
             right_->beginTuple();
         }

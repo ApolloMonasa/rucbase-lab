@@ -233,24 +233,44 @@ void SmManager::drop_table(const std::string& tab_name, Context* context) {
         throw TableNotFoundError(tab_name);
     }
     
-    // Get table metadata
-    TabMeta &tab = db_.get_table(tab_name);
+    // Get table metadata before it's modified
+    TabMeta tab = db_.get_table(tab_name);
     
-    // Drop all indexes on this table
+    // First, drop all indexes on this table
     std::vector<std::vector<std::string>> index_cols_list;
-    for (auto &index : tab.indexes) {
+    for (const auto &index : tab.indexes) {
         std::vector<std::string> col_names;
         for (const auto &col : index.cols) {
             col_names.push_back(col.name);
         }
         index_cols_list.push_back(col_names);
     }
-    for (auto &col_names : index_cols_list) {
-        drop_index(tab_name, col_names, context);
+    
+    // Drop indexes by closing handles and destroying files
+    for (const auto &col_names : index_cols_list) {
+        // Close index file handle
+        std::string index_name = "idx_" + tab_name + "_" + col_names[0];
+        auto ix_it = ihs_.find(index_name);
+        if (ix_it != ihs_.end()) {
+            ihs_.erase(ix_it);
+        }
+        
+        // Destroy index file  
+        try {
+            ix_manager_->destroy_index(tab_name, col_names);
+        } catch (...) {
+            // Continue even if index destruction fails
+        }
     }
     
-    // Close and delete table file
-    fhs_.erase(tab_name);
+    // Close the table file properly
+    auto it = fhs_.find(tab_name);
+    if (it != fhs_.end()) {
+        rm_manager_->close_file(it->second.get());
+        fhs_.erase(it);
+    }
+    
+    // Destroy the table file
     rm_manager_->destroy_file(tab_name);
     
     // Remove table from database metadata

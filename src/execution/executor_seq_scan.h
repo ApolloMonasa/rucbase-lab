@@ -26,6 +26,7 @@ class SeqScanExecutor : public AbstractExecutor {
     std::vector<ColMeta> cols_;         // scan后生成的记录的字段
     size_t len_;                        // scan后生成的每条记录的长度
     std::vector<Condition> fed_conds_;  // 同conds_，两个字段相同
+    bool is_end_;
 
     Rid rid_;
     std::unique_ptr<RecScan> scan_;     // table_iterator
@@ -53,14 +54,7 @@ class SeqScanExecutor : public AbstractExecutor {
      */
     void beginTuple() override {
         scan_ = std::make_unique<RmScan>(fh_);
-        nextTuple();
-    }
-
-    /**
-     * @brief 从当前scan_指向的记录开始迭代扫描,直到扫描到第一个满足谓词条件的元组停止,并赋值给rid_
-     *
-     */
-    void nextTuple() override {
+        is_end_ = false;
         while (!scan_->is_end()) {
             rid_ = scan_->rid();
             auto rec = fh_->get_record(rid_, context_);
@@ -69,6 +63,33 @@ class SeqScanExecutor : public AbstractExecutor {
             }
             scan_->next();
         }
+        is_end_ = true;
+    }
+
+    /**
+     * @brief 从当前scan_指向的记录开始迭代扫描,直到扫描到第一个满足谓词条件的元组停止,并赋值给rid_
+     *
+     */
+    void nextTuple() override {
+        if (is_end_) {
+            return;
+        }
+
+        if (scan_ == nullptr) {
+            is_end_ = true;
+            return;
+        }
+
+        scan_->next();
+        while (!scan_->is_end()) {
+            rid_ = scan_->rid();
+            auto rec = fh_->get_record(rid_, context_);
+            if (exec_utils::satisfy_conds(conds_, cols_, rec.get())) {
+                return;
+            }
+            scan_->next();
+        }
+        is_end_ = true;
     }
 
     /**
@@ -77,10 +98,13 @@ class SeqScanExecutor : public AbstractExecutor {
      * @return std::unique_ptr<RmRecord>
      */
     std::unique_ptr<RmRecord> Next() override {
-        auto rec = fh_->get_record(rid_, context_);
-        nextTuple();
-        return rec;
+        if (is_end_) {
+            return nullptr;
+        }
+        return fh_->get_record(rid_, context_);
     }
+
+    bool is_end() const override { return is_end_; }
 
     Rid &rid() override { return rid_; }
     

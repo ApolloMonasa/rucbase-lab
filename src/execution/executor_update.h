@@ -41,26 +41,19 @@ class UpdateExecutor : public AbstractExecutor {
     }
     
     std::unique_ptr<RmRecord> Next() override {
-        if (update_idx_ >= rids_.size()) {
-            return nullptr;
-        }
-        
-        Rid rid = rids_[update_idx_++];
-        auto rec = fh_->get_record(rid, context_);
-        
-        for (const auto &set_clause : set_clauses_) {
-            const auto &col = tab_.get_col(set_clause.lhs.col_name);
-            char *data = rec->data + col->offset;
-            
-            if (set_clause.rhs.type == TYPE_INT || set_clause.rhs.type == TYPE_FLOAT) {
-                memcpy(data, set_clause.rhs.raw->data, col->len);
-            } else {
+        while (update_idx_ < rids_.size()) {
+            Rid rid = rids_[update_idx_++];
+            auto rec = fh_->get_record(rid, context_);
+
+            for (const auto &set_clause : set_clauses_) {
+                const auto &col = tab_.get_col(set_clause.lhs.col_name);
+                char *data = rec->data + col->offset;
                 memcpy(data, set_clause.rhs.raw->data, col->len);
             }
+
+            fh_->update_record(rid, rec->data, context_);
         }
-        
-        fh_->update_record(rid, rec->data, context_);
-        return rec;
+        return nullptr;
     }
 
     Rid &rid() override { return _abstract_rid; }

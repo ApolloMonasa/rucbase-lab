@@ -39,12 +39,10 @@ class DeleteExecutor : public AbstractExecutor {
     }
 
     std::unique_ptr<RmRecord> Next() override {
-        if (delete_idx_ >= rids_.size()) {
-            return nullptr;
+        while (delete_idx_ < rids_.size()) {
+            Rid rid = rids_[delete_idx_++];
+            fh_->delete_record(rid, context_);
         }
-        
-        Rid rid = rids_[delete_idx_++];
-        fh_->delete_record(rid, context_);
         return nullptr;
     }
 
