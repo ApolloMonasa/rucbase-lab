@@ -41,6 +41,14 @@ class DeleteExecutor : public AbstractExecutor {
     std::unique_ptr<RmRecord> Next() override {
         while (delete_idx_ < rids_.size()) {
             Rid rid = rids_[delete_idx_++];
+            // 保存删除前的记录数据，用于可能的回滚
+            if (context_ != nullptr && context_->txn_ != nullptr) {
+                auto old_rec = fh_->get_record(rid, context_);
+                if (old_rec != nullptr) {
+                    context_->txn_->append_write_record(
+                        new WriteRecord(WType::DELETE_TUPLE, tab_name_, rid, *old_rec));
+                }
+            }
             fh_->delete_record(rid, context_);
         }
         return nullptr;

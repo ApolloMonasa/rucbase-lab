@@ -45,6 +45,12 @@ class UpdateExecutor : public AbstractExecutor {
             Rid rid = rids_[update_idx_++];
             auto rec = fh_->get_record(rid, context_);
 
+            // 保存更新前的记录数据，用于可能的回滚
+            std::unique_ptr<RmRecord> old_rec;
+            if (context_ != nullptr && context_->txn_ != nullptr) {
+                old_rec = std::make_unique<RmRecord>(*rec);
+            }
+
             for (const auto &set_clause : set_clauses_) {
                 const auto &col = tab_.get_col(set_clause.lhs.col_name);
                 char *data = rec->data + col->offset;
@@ -52,6 +58,12 @@ class UpdateExecutor : public AbstractExecutor {
             }
 
             fh_->update_record(rid, rec->data, context_);
+
+            // 记录写操作，用于事务回滚
+            if (old_rec != nullptr) {
+                context_->txn_->append_write_record(
+                    new WriteRecord(WType::UPDATE_TUPLE, tab_name_, rid, *old_rec));
+            }
         }
         return nullptr;
     }
